@@ -90,17 +90,28 @@ def inline_format(text: str) -> str:
 def md_to_html(md: str) -> str:
     lines = md.split("\n")
     html = []
-    in_list = False
+    in_ul = False      # 순서 없는 목록
+    in_ol = False      # 순서 있는 목록
     in_code = False
     code_lines = []
     in_table = False
     table_rows = []
 
-    def flush_list():
-        nonlocal in_list
-        if in_list:
+    def flush_ul():
+        nonlocal in_ul
+        if in_ul:
             html.append("</ul>")
-            in_list = False
+            in_ul = False
+
+    def flush_ol():
+        nonlocal in_ol
+        if in_ol:
+            html.append("</ol>")
+            in_ol = False
+
+    def flush_list():
+        flush_ul()
+        flush_ol()
 
     def flush_table():
         nonlocal in_table, table_rows
@@ -120,31 +131,29 @@ def md_to_html(md: str) -> str:
     for line in lines:
         stripped = line.strip()
 
-        # 코드 블록 처리
+        # ── 코드 블록 (``` 으로 감싸진 영역은 내부 변환 없이 그대로) ──
         if stripped.startswith("```"):
             if not in_code:
                 flush_list()
                 flush_table()
-                lang = stripped[3:].strip()
                 in_code = True
                 code_lines = []
             else:
                 code_str = "\n".join(code_lines)
-                html.append(f'<pre style="background:#1e2d3d;color:#7dd3fc;padding:1em;border-radius:6px;overflow-x:auto;"><code>{code_str}</code></pre>')
+                html.append(f'<pre style="background:#1e2d3d;color:#7dd3fc;padding:1em;border-radius:6px;overflow-x:auto;font-family:monospace;font-size:14px;line-height:1.6;"><code>{code_str}</code></pre>')
                 in_code = False
                 code_lines = []
             continue
 
         if in_code:
-            # HTML 특수문자 이스케이프
+            # 코드 블록 내부: HTML 이스케이프만, md 변환 없음
             safe = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
             code_lines.append(safe)
             continue
 
-        # 테이블 처리 (| 로 시작하는 줄)
+        # ── 테이블 ──
         if stripped.startswith("|"):
             flush_list()
-            # 구분선 행 skip (|---|---|)
             if re.match(r"^[\|\s\-:]+$", stripped):
                 continue
             in_table = True
@@ -154,6 +163,7 @@ def md_to_html(md: str) -> str:
             if in_table:
                 flush_table()
 
+        # ── 헤딩 ──
         if line.startswith("### "):
             flush_list()
             html.append(f"<h3>{inline_format(line[4:].strip())}</h3>")
@@ -163,20 +173,39 @@ def md_to_html(md: str) -> str:
         elif line.startswith("# "):
             flush_list()
             html.append(f"<h1>{inline_format(line[2:].strip())}</h1>")
-        elif stripped in ("---", "***"):
-            flush_list()
+
+        # ── 수평선 (--- 은 목록/테이블 밖에서만) ──
+        elif stripped in ("---", "***", "___") and not in_ul and not in_ol:
             html.append("<hr>")
+
+        # ── 인용 ──
         elif line.startswith("> "):
             flush_list()
-            html.append(f'<blockquote style="border-left:4px solid #ccc;margin:0;padding:0.5em 1em;color:#555;"><p>{inline_format(line[2:].strip())}</p></blockquote>')
+            html.append(f'<blockquote style="border-left:4px solid #ccc;margin:1em 0;padding:0.5em 1em;color:#555;background:#f9f9f9;"><p>{inline_format(line[2:].strip())}</p></blockquote>')
+
+        # ── 순서 없는 목록 (- 또는 * ) ──
         elif re.match(r"^[-*]\s", line):
-            if not in_list:
+            flush_ol()
+            if not in_ul:
                 html.append("<ul>")
-                in_list = True
+                in_ul = True
             html.append(f"<li>{inline_format(line[2:].strip())}</li>")
+
+        # ── 순서 있는 목록 (1. 2. 3. ...) ──
+        elif re.match(r"^\d+\.\s", line):
+            flush_ul()
+            if not in_ol:
+                html.append('<ol style="padding-left:1.5em;margin:0.8em 0;">')
+                in_ol = True
+            content = re.sub(r"^\d+\.\s", "", line).strip()
+            html.append(f"<li>{inline_format(content)}</li>")
+
+        # ── 빈 줄 ──
         elif stripped == "":
             flush_list()
             html.append("")
+
+        # ── 일반 단락 ──
         else:
             flush_list()
             formatted = inline_format(stripped)
