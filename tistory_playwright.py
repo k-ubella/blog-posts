@@ -1,7 +1,7 @@
 """
 티스토리 Playwright 자동 배포 스크립트 (세션 방식 - 비밀번호 불필요)
 =====================================================================
-OpenClaw 또는 직접 실행 모두 가능
+이미지: GitHub Public 레포 raw URL 방식 (업로드 불필요)
 
 준비:
   1. 최초 1회: python tistory_login.py  → 브라우저에서 직접 로그인 → 세션 저장
@@ -12,9 +12,10 @@ OpenClaw 또는 직접 실행 모두 가능
   playwright install chromium
 
 사용법:
-  python tistory_playwright.py                          # 기본 파일 발행
+  python tistory_playwright.py                          # 최신 파일 자동 발행
   python tistory_playwright.py --file "내글.md"         # 파일 지정
   python tistory_playwright.py --draft                  # 임시저장 (발행 안함)
+  python tistory_playwright.py --no-pull                # git pull 생략
 """
 
 import asyncio
@@ -22,6 +23,7 @@ import argparse
 import re
 import sys
 import io
+import urllib.parse
 import subprocess
 from pathlib import Path
 
@@ -38,87 +40,44 @@ except ImportError:
     exit(1)
 
 # =============================================
-# ✏️  블로그 이름만 채워주세요 (비밀번호 불필요!)
+# ✏️  설정값 채워주세요
 # =============================================
 CONFIG = {
-    "blog_name": "fakehuman",
+    "blog_name":     "fakehuman",    # 티스토리 블로그 이름
+    "github_user":   "k-ubella",     # GitHub 사용자명
+    "github_repo":   "blog-posts",   # 레포 이름 (Public)
+    "github_branch": "main",         # 브랜치
 }
-
-# 세션 파일 경로 (tistory_login.py 가 저장한 파일)
-SESSION_FILE = Path(__file__).parent / "tistory_session.json"
-
-# 발행할 기본 마크다운 파일
-DEFAULT_MD_FILE = "posts/260220 OpenClaw 사용기.md"
 # =============================================
 
+SESSION_FILE = Path(__file__).parent / "tistory_session.json"
 
-def parse_markdown(filepath: str):
-    """마크다운에서 제목, 본문 HTML, 이미지 목록 추출"""
-    content = Path(filepath).read_text(encoding="utf-8")
-    md_dir = Path(filepath).parent  # md 파일 기준 디렉토리
 
-    # 첫 H1을 제목으로
-    title_match = re.search(r"^#\s+(.+)", content, re.MULTILINE)
-    title = title_match.group(1).strip() if title_match else Path(filepath).stem
+def github_raw_url(img_name: str) -> str | None:
+    """이미지 파일명 → GitHub raw URL 변환 (레포 내 경로 자동 탐색)"""
+    repo_root = Path(__file__).parent
+    user   = CONFIG["github_user"]
+    repo   = CONFIG["github_repo"]
+    branch = CONFIG["github_branch"]
 
-    # 옵시디언 이미지 링크 ![[파일명.png]] → placeholder로 치환
-    image_list = []  # [(placeholder, 실제파일경로), ...]
+    candidates = [
+        repo_root / "00_첨부파일" / img_name,
+        repo_root / "posts" / img_name,
+        repo_root / "posts" / "images" / img_name,
+        repo_root / img_name,
+    ]
+    for c in candidates:
+        if c.exists():
+            rel = c.resolve().relative_to(repo_root.resolve())
+            encoded = "/".join(urllib.parse.quote(part) for part in rel.parts)
+            return f"https://raw.githubusercontent.com/{user}/{repo}/{branch}/{encoded}"
 
-    def replace_obsidian_image(m):
-        raw = m.group(1)  # 예: "screenshot.png" 또는 "images/screenshot.png"
-        # 파이프(|) 뒤 크기 옵션 제거: ![[file.png|400]] → file.png
-        img_name = raw.split("|")[0].strip()
-
-        # md 파일과 같은 폴더 또는 하위 폴더에서 파일 찾기
-        repo_root = Path(__file__).parent  # tistory-bot 루트 (= 레포 최상위)
-        candidates = [
-            md_dir / img_name,                        # posts/파일명
-            md_dir / "images" / img_name,             # posts/images/파일명
-            md_dir / "assets" / img_name,             # posts/assets/파일명
-            repo_root / "00_첨부파일" / img_name,     # 옵시디언 기본 첨부 폴더
-            repo_root / img_name,                     # 레포 루트
-        ]
-        found_path = None
-        for c in candidates:
-            if c.exists():
-                found_path = str(c.resolve())
-                break
-
-        if found_path:
-            idx = len(image_list)
-            placeholder = f"IMAGE_PLACEHOLDER_{idx}"
-            image_list.append((placeholder, found_path, img_name))
-            return placeholder
-        else:
-            print(f"  ⚠️  이미지 파일 없음: {img_name}")
-            return ""  # 없으면 제거
-
-    body = re.sub(r"!\[\[(.+?)\]\]", replace_obsidian_image, content)
-
-    # 일반 마크다운 이미지 ![alt](path) 도 처리
-    def replace_md_image(m):
-        alt, src = m.group(1), m.group(2)
-        if src.startswith("http"):
-            # 외부 URL은 그대로 <img> 태그
-            return f'<img src="{src}" alt="{alt}">'
-        img_path = md_dir / src
-        if img_path.exists():
-            idx = len(image_list)
-            placeholder = f"IMAGE_PLACEHOLDER_{idx}"
-            image_list.append((placeholder, str(img_path.resolve()), alt))
-            return placeholder
-        return ""
-
-    body = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace_md_image, body)
-
-    # 간단한 마크다운 → HTML
-    body = md_to_html(body)
-
-    return title, body, image_list
+    print(f"  ⚠️  이미지 파일 없음: {img_name}")
+    return None
 
 
 def inline_format(text: str) -> str:
-    """볼드, 이탤릭, 링크 등 인라인 요소 변환 (모든 라인 유형에 공통 적용)"""
+    """볼드, 이탤릭, 링크 인라인 변환"""
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"\*(.+?)\*",     r"<em>\1</em>",         text)
     text = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\2">\1</a>', text)
@@ -134,12 +93,7 @@ def md_to_html(md: str) -> str:
     for line in lines:
         stripped = line.strip()
 
-        # 이미지 placeholder 단독 라인 → 그대로 유지 (나중에 <img>로 교체됨)
-        if re.match(r"^IMAGE_PLACEHOLDER_\d+$", stripped):
-            if in_list: html.append("</ul>"); in_list = False
-            html.append(stripped)
-
-        elif line.startswith("### "):
+        if line.startswith("### "):
             if in_list: html.append("</ul>"); in_list = False
             html.append(f"<h3>{inline_format(line[4:].strip())}</h3>")
         elif line.startswith("## "):
@@ -172,83 +126,47 @@ def md_to_html(md: str) -> str:
     return "\n".join(html)
 
 
-async def upload_image_to_tistory(page, image_path: str) -> str:
-    """
-    티스토리 TinyMCE 이미지 버튼 클릭 → 동적 생성되는 file input에 파일 전달
-    → 티스토리가 에디터에 삽입한 치환자 HTML 반환
-    """
-    print(f"  🖼️  이미지 업로드 중: {Path(image_path).name}")
+def parse_markdown(filepath: str):
+    """마크다운 → 제목 + HTML (이미지는 GitHub raw URL로 변환)"""
+    content = Path(filepath).read_text(encoding="utf-8")
 
-    # 업로드 전 에디터 스냅샷
-    before_html = await page.evaluate("""
-        () => {
-            const ed = typeof tinymce !== 'undefined'
-                ? (tinymce.activeEditor || tinymce.editors[0]) : null;
-            return ed ? ed.getContent() : '';
-        }
-    """)
+    # 첫 H1을 제목으로
+    title_match = re.search(r"^#\s+(.+)", content, re.MULTILINE)
+    title = title_match.group(1).strip() if title_match else Path(filepath).stem
 
-    # mce-i-image 아이콘의 부모 button 클릭
-    # (클릭하면 티스토리가 동적으로 file input 또는 업로드 팝업 생성)
-    clicked = await page.evaluate("""
-        () => {
-            const icon = document.querySelector('i.mce-ico.mce-i-image');
-            if (icon) {
-                const btn = icon.closest('button') || icon.parentElement;
-                if (btn) { btn.click(); return true; }
-            }
-            return false;
-        }
-    """)
+    # 옵시디언 이미지 ![[파일명.png]] → <img src="GitHub raw URL">
+    def replace_obsidian_image(m):
+        img_name = m.group(1).split("|")[0].strip()
+        url = github_raw_url(img_name)
+        if url:
+            print(f"  🖼️  {img_name}")
+            return f'<img src="{url}" alt="{img_name}" style="max-width:100%;">'
+        return ""
 
-    if not clicked:
-        print(f"  ❌ 이미지 버튼을 찾지 못했습니다.")
-        return None
+    body = re.sub(r"!\[\[(.+?)\]\]", replace_obsidian_image, content)
 
-    # 버튼 클릭 후 동적으로 생성되는 file input 대기 (최대 3초)
-    file_input = None
-    for _ in range(6):
-        await page.wait_for_timeout(500)
-        file_input = await page.query_selector("input[type='file']")
-        if file_input:
-            break
+    # 일반 마크다운 이미지 ![alt](path)
+    def replace_md_image(m):
+        alt, src = m.group(1), m.group(2)
+        if src.startswith("http"):
+            return f'<img src="{src}" alt="{alt}" style="max-width:100%;">'
+        url = github_raw_url(Path(src).name)
+        if url:
+            return f'<img src="{url}" alt="{alt}" style="max-width:100%;">'
+        return ""
 
-    if not file_input:
-        print(f"  ❌ 클릭 후에도 file input이 나타나지 않았습니다.")
-        return None
+    body = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace_md_image, body)
 
-    # 파일 전달 → 티스토리가 업로드 후 치환자를 에디터에 삽입
-    await file_input.set_input_files(image_path)
-
-    # 업로드 완료까지 최대 15초 대기
-    after_html = before_html
-    for _ in range(30):
-        await page.wait_for_timeout(500)
-        after_html = await page.evaluate("""
-            () => {
-                const ed = typeof tinymce !== 'undefined'
-                    ? (tinymce.activeEditor || tinymce.editors[0]) : null;
-                return ed ? ed.getContent() : '';
-            }
-        """)
-        if after_html != before_html:
-            break
-
-    if after_html == before_html:
-        print(f"  ⚠️  업로드 후 에디터 변화 없음")
-        return None
-
-    print(f"  ✅ 업로드 완료 (치환자 삽입됨)")
-    return after_html
+    body = md_to_html(body)
+    return title, body
 
 
-async def post_to_tistory(title: str, content: str, image_list: list = None, draft: bool = False):
+async def post_to_tistory(title: str, content: str, draft: bool = False):
     blog = CONFIG["blog_name"]
     write_url = f"https://{blog}.tistory.com/manage/newpost/"
 
     async with async_playwright() as p:
-        # 세션 파일로 로그인 상태 복원 (비밀번호 불필요)
-        browser = await p.chromium.launch(headless=True)   # 백그라운드 실행
+        browser = await p.chromium.launch(headless=True)
         context = await browser.new_context(storage_state=str(SESSION_FILE))
         page = await context.new_page()
 
@@ -257,7 +175,6 @@ async def post_to_tistory(title: str, content: str, image_list: list = None, dra
         await page.goto("https://www.tistory.com")
         await page.wait_for_load_state("networkidle")
 
-        # 로그인 여부 체크
         is_logged_in = await page.query_selector("a.link_myinfo, .area_my, [class*='my_info']")
         if not is_logged_in:
             print("⚠️  세션이 만료되었습니다. tistory_login.py 를 다시 실행해주세요.")
@@ -272,104 +189,16 @@ async def post_to_tistory(title: str, content: str, image_list: list = None, dra
         await page.wait_for_load_state("networkidle")
         await page.wait_for_timeout(2000)
 
-        # 제목 입력 (textarea#post-title-inp 확인됨)
+        # 제목 입력
         await page.fill("textarea#post-title-inp", title)
         print(f"📌 제목 입력: {title}")
 
         # TinyMCE 에디터 로딩 대기
         await page.wait_for_timeout(3000)
 
-        # ── TinyMCE iframe 내부 포함 전체 구조 디버그 ───────────────
-        debug_info = await page.evaluate("""
-            () => {
-                const result = {};
-
-                // 1. TinyMCE iframe 확인
-                const iframe = document.querySelector('iframe#editor-tistory_ifr, iframe[id*="mce"], iframe[id*="tistory"]');
-                result.iframeId = iframe ? iframe.id : 'none';
-
-                // 2. TinyMCE 툴바 버튼 목록
-                const btns = document.querySelectorAll('.mce-toolbar button, .tox-toolbar button, [class*="toolbar"] button');
-                result.toolbarButtons = Array.from(btns).slice(0, 20).map(b => ({
-                    title: b.title || b.getAttribute('aria-label') || '',
-                    className: b.className.substring(0, 80)
-                }));
-
-                // 3. 이미지 관련 요소 (숨김 포함)
-                const allInputs = document.querySelectorAll('input');
-                result.allInputs = Array.from(allInputs).map(el => ({
-                    type: el.type,
-                    id: el.id,
-                    name: el.name,
-                    className: el.className.substring(0, 60),
-                    accept: el.accept
-                }));
-
-                // 4. 이미지 업로드 관련 버튼/링크
-                const imgBtns = document.querySelectorAll('[class*="image"], [id*="image"], [class*="photo"], [class*="upload"]');
-                result.imageElements = Array.from(imgBtns).slice(0, 10).map(el => ({
-                    tag: el.tagName,
-                    id: el.id,
-                    className: el.className.substring(0, 80),
-                    text: el.innerText ? el.innerText.substring(0, 30) : ''
-                }));
-
-                return result;
-            }
-        """)
-        print(f"\n🔍 TinyMCE iframe id: {debug_info['iframeId']}")
-        print(f"\n🔍 툴바 버튼 목록:")
-        for btn in debug_info['toolbarButtons']:
-            print(f"  title={btn['title']} class={btn['className']}")
-        print(f"\n🔍 모든 input 목록 ({len(debug_info['allInputs'])}개):")
-        for inp in debug_info['allInputs']:
-            print(f"  type={inp['type']} id={inp['id']} name={inp['name']} accept={inp['accept']}")
-        print(f"\n🔍 이미지/업로드 관련 요소:")
-        for el in debug_info['imageElements']:
-            print(f"  {el['tag']} id={el['id']} class={el['className']} text={el['text']}")
-        # ────────────────────────────────────────────────────────────
-
-        # ── 이미지 업로드 처리 (치환자 방식) ────────────────────────
-        if image_list:
-            print(f"\n🖼️  이미지 {len(image_list)}개 업로드 시작...")
-            placeholder_to_tistory = {}  # placeholder → 티스토리 치환자 HTML
-
-            for placeholder, img_path, img_name in image_list:
-                after_html = await upload_image_to_tistory(page, img_path)
-                if after_html:
-                    placeholder_to_tistory[placeholder] = after_html
-                else:
-                    placeholder_to_tistory[placeholder] = None
-                    print(f"  ⚠️  {img_name} 업로드 실패 → 이미지 제거")
-
-            # 업로드 후 에디터를 비워두고, content의 placeholder를
-            # 티스토리가 삽입한 치환자 HTML 조각으로 교체
-            success_count = 0
-            for placeholder, tistory_html in placeholder_to_tistory.items():
-                if tistory_html:
-                    # 에디터 전체 HTML에서 before_html 이후 추가된 부분이
-                    # 치환자 조각 → content의 placeholder 자리에 삽입
-                    content = content.replace(placeholder, tistory_html)
-                    success_count += 1
-                else:
-                    content = content.replace(placeholder, "")
-
-            print(f"✅ 이미지 처리 완료 ({success_count}개 성공)")
-
-            # 에디터를 다시 비워서 본문 전체를 깨끗하게 주입할 준비
-            await page.evaluate("""
-                () => {
-                    const ed = typeof tinymce !== 'undefined'
-                        ? (tinymce.activeEditor || tinymce.editors[0]) : null;
-                    if (ed) ed.setContent('');
-                }
-            """)
-            await page.wait_for_timeout(500)
-        # ────────────────────────────────────────────────────────────
-
         escaped = content.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
 
-        # TinyMCE setContent + textarea 동기화 한번에 처리
+        # TinyMCE에 본문 주입
         injected = await page.evaluate(f"""
             (() => {{
                 if (typeof tinymce !== 'undefined') {{
@@ -382,7 +211,6 @@ async def post_to_tistory(title: str, content: str, image_list: list = None, dra
                         return 'tinymce';
                     }}
                 }}
-                // fallback: textarea#editor-tistory 직접 입력
                 const ta = document.querySelector('textarea#editor-tistory');
                 if (ta) {{
                     ta.value = `{escaped}`;
@@ -393,62 +221,46 @@ async def post_to_tistory(title: str, content: str, image_list: list = None, dra
                 return 'not_found';
             }})()
         """)
-        print(f"✍️ 본문 입력 완료 (방식: {injected})")
+        print(f"✍️  본문 입력 완료 (방식: {injected})")
         await page.wait_for_timeout(2000)
 
         if draft:
-            # 임시저장 버튼 클릭
             await page.click("a.action")
             await page.wait_for_timeout(3000)
             print("💾 임시저장 완료")
         else:
-            # 완료 버튼 클릭 → 발행 팝업 열림 (button 태그 확인됨)
             await page.click("button.btn.btn-default")
             await page.wait_for_timeout(2000)
             print("📋 발행 팝업 열림")
 
-            # 공개 라디오 버튼 클릭 (input#open20, value='20' 확인됨)
             await page.click("input#open20")
             await page.wait_for_timeout(500)
             print("🌐 공개 설정 완료")
 
-            # 발행 버튼 클릭 (button#publish-btn 확인됨)
             await page.click("button#publish-btn")
             await page.wait_for_load_state("networkidle")
             await page.wait_for_timeout(2000)
 
-            current_url = page.url
             print(f"\n🎉 발행 완료!")
-            print(f"🔗 URL: {current_url}")
+            print(f"🔗 URL: {page.url}")
 
         await browser.close()
 
 
 def git_pull():
-    """GitHub에서 최신 파일 pull"""
     repo_dir = Path(__file__).parent
-    git_dir = repo_dir / ".git"
-    if not git_dir.exists():
+    if not (repo_dir / ".git").exists():
         print("⚠️  git 레포가 아닙니다. git pull 생략.")
-        return False
-
+        return
     print("📦 GitHub에서 최신 파일 받는 중...")
-    result = subprocess.run(
-        ["git", "pull"],
-        cwd=str(repo_dir),
-        capture_output=True,
-        text=True
-    )
+    result = subprocess.run(["git", "pull"], cwd=str(repo_dir), capture_output=True, text=True)
     if result.returncode == 0:
         print(f"✅ git pull 완료: {result.stdout.strip()}")
-        return True
     else:
         print(f"⚠️  git pull 실패: {result.stderr.strip()}")
-        return False
 
 
 def get_latest_md():
-    """posts 폴더에서 가장 최근에 수정된 md 파일 반환"""
     posts_dir = Path(__file__).parent / "posts"
     if not posts_dir.exists():
         return None
@@ -458,29 +270,20 @@ def get_latest_md():
 
 def main():
     parser = argparse.ArgumentParser(description="티스토리 자동 배포")
-    parser.add_argument("--file",   default=None,  help="마크다운 파일 경로 (생략시 최신 파일 자동 선택)")
-    parser.add_argument("--draft",  action="store_true", help="임시저장 (발행 안함)")
+    parser.add_argument("--file",    default=None, help="마크다운 파일 경로")
+    parser.add_argument("--draft",   action="store_true", help="임시저장 (발행 안함)")
     parser.add_argument("--no-pull", action="store_true", help="git pull 생략")
     args = parser.parse_args()
 
-    # 설정 확인
-    if "YOUR_" in CONFIG["blog_name"]:
-        print("⚠️  CONFIG의 blog_name 을 채워주세요! (예: myblog)")
-        return
-
-    # 세션 파일 확인
     if not SESSION_FILE.exists():
         print("⚠️  세션 파일이 없습니다. 먼저 아래를 실행해주세요:")
         print("   python3 tistory_login.py")
         return
 
-    # git pull (--no-pull 옵션 없으면 항상 실행)
     if not args.no_pull:
         git_pull()
 
-    # 파일 경로 결정
     if args.file:
-        # 파일 직접 지정
         md_path = Path(__file__).parent / args.file
         if not md_path.exists():
             md_path = Path(args.file)
@@ -488,7 +291,6 @@ def main():
             print(f"❌ 파일 없음: {args.file}")
             return
     else:
-        # 최신 파일 자동 선택
         md_path = get_latest_md()
         if not md_path:
             print("❌ posts/ 폴더에 md 파일이 없습니다.")
@@ -496,24 +298,16 @@ def main():
         print(f"📂 최신 파일 자동 선택: {md_path.name}")
 
     print(f"📄 파일: {md_path.name}")
-    title, body, image_list = parse_markdown(str(md_path))
+    title, body = parse_markdown(str(md_path))
     print(f"📝 제목: {title}")
-    if image_list:
-        print(f"🖼️  이미지 {len(image_list)}개 감지:")
-        for placeholder, img_path, img_name in image_list:
-            exists = "✅" if Path(img_path).exists() else "❌ 파일없음"
-            print(f"   {exists} {img_name}")
-    else:
-        print(f"🖼️  이미지 없음")
-    mode = "임시저장" if args.draft else "발행"
-    print(f"🚀 모드: {mode}")
+    print(f"🚀 모드: {'임시저장' if args.draft else '발행'}")
 
     confirm = input("\n진행할까요? (y/n): ").strip().lower()
     if confirm != "y":
         print("취소됨")
         return
 
-    asyncio.run(post_to_tistory(title, body, image_list=image_list, draft=args.draft))
+    asyncio.run(post_to_tistory(title, body, draft=args.draft))
 
 
 if __name__ == "__main__":
