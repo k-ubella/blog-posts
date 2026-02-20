@@ -174,18 +174,12 @@ def md_to_html(md: str) -> str:
 
 async def upload_image_to_tistory(page, image_path: str) -> str:
     """
-    티스토리 에디터에 이미지를 업로드하고,
-    티스토리가 에디터에 삽입한 치환자(##_Image_##)가 포함된 HTML을 반환.
-
-    전략:
-      1. 업로드 전 TinyMCE 본문 스냅샷 저장
-      2. 숨겨진 file input에 set_input_files() 로 파일 전달
-      3. 업로드 완료까지 최대 10초 대기 (img 태그 또는 치환자 등장 감지)
-      4. 업로드 후 TinyMCE 본문 다시 읽어 새로 추가된 치환자/img 조각 반환
+    티스토리 TinyMCE 이미지 버튼 클릭 → 동적 생성되는 file input에 파일 전달
+    → 티스토리가 에디터에 삽입한 치환자 HTML 반환
     """
     print(f"  🖼️  이미지 업로드 중: {Path(image_path).name}")
 
-    # 업로드 전 에디터 내용 스냅샷
+    # 업로드 전 에디터 스냅샷
     before_html = await page.evaluate("""
         () => {
             const ed = typeof tinymce !== 'undefined'
@@ -194,29 +188,41 @@ async def upload_image_to_tistory(page, image_path: str) -> str:
         }
     """)
 
-    # 티스토리 글쓰기 페이지의 숨겨진 파일 input 찾기
-    # (툴바 이미지 버튼 클릭 없이 바로 set_input_files 가능)
-    file_input = await page.query_selector(
-        "input[type='file'][accept*='image'], "
-        "input[type='file'][name='uploadImage'], "
-        "input#imageUpload, "
-        "input.image-upload"
-    )
+    # mce-i-image 아이콘의 부모 button 클릭
+    # (클릭하면 티스토리가 동적으로 file input 또는 업로드 팝업 생성)
+    clicked = await page.evaluate("""
+        () => {
+            const icon = document.querySelector('i.mce-ico.mce-i-image');
+            if (icon) {
+                const btn = icon.closest('button') || icon.parentElement;
+                if (btn) { btn.click(); return true; }
+            }
+            return false;
+        }
+    """)
 
-    if not file_input:
-        # fallback: 모든 file input 중 첫 번째
-        file_input = await page.query_selector("input[type='file']")
-
-    if not file_input:
-        print(f"  ❌ 파일 input을 찾지 못했습니다.")
+    if not clicked:
+        print(f"  ❌ 이미지 버튼을 찾지 못했습니다.")
         return None
 
-    # 파일 전달 → 티스토리가 자동 업로드 후 에디터에 치환자 삽입
+    # 버튼 클릭 후 동적으로 생성되는 file input 대기 (최대 3초)
+    file_input = None
+    for _ in range(6):
+        await page.wait_for_timeout(500)
+        file_input = await page.query_selector("input[type='file']")
+        if file_input:
+            break
+
+    if not file_input:
+        print(f"  ❌ 클릭 후에도 file input이 나타나지 않았습니다.")
+        return None
+
+    # 파일 전달 → 티스토리가 업로드 후 치환자를 에디터에 삽입
     await file_input.set_input_files(image_path)
 
-    # 업로드 완료 감지: 에디터 내용이 바뀔 때까지 최대 10초 폴링
+    # 업로드 완료까지 최대 15초 대기
     after_html = before_html
-    for _ in range(20):
+    for _ in range(30):
         await page.wait_for_timeout(500)
         after_html = await page.evaluate("""
             () => {
@@ -229,13 +235,11 @@ async def upload_image_to_tistory(page, image_path: str) -> str:
             break
 
     if after_html == before_html:
-        print(f"  ⚠️  업로드 후 에디터 변화 없음 (업로드 실패 또는 지연)")
+        print(f"  ⚠️  업로드 후 에디터 변화 없음")
         return None
 
-    # 새로 추가된 부분만 추출
-    # before에 없던 img 태그 또는 치환자 조각 반환
-    print(f"  ✅ 업로드 완료 (에디터에 이미지 삽입됨)")
-    return after_html  # 전체 HTML 반환 → 호출부에서 before와 비교해 diff 사용
+    print(f"  ✅ 업로드 완료 (치환자 삽입됨)")
+    return after_html
 
 
 async def post_to_tistory(title: str, content: str, image_list: list = None, draft: bool = False):
