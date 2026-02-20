@@ -53,20 +53,77 @@ DEFAULT_MD_FILE = "posts/260220 OpenClaw 사용기.md"
 
 
 def parse_markdown(filepath: str):
-    """마크다운에서 제목과 본문 HTML 추출"""
+    """마크다운에서 제목, 본문 HTML, 이미지 목록 추출"""
     content = Path(filepath).read_text(encoding="utf-8")
+    md_dir = Path(filepath).parent  # md 파일 기준 디렉토리
 
     # 첫 H1을 제목으로
     title_match = re.search(r"^#\s+(.+)", content, re.MULTILINE)
     title = title_match.group(1).strip() if title_match else Path(filepath).stem
 
-    # 옵시디언 이미지 링크 제거
-    body = re.sub(r"!\[\[.*?\]\]", "", content)
+    # 옵시디언 이미지 링크 ![[파일명.png]] → placeholder로 치환
+    image_list = []  # [(placeholder, 실제파일경로), ...]
+
+    def replace_obsidian_image(m):
+        raw = m.group(1)  # 예: "screenshot.png" 또는 "images/screenshot.png"
+        # 파이프(|) 뒤 크기 옵션 제거: ![[file.png|400]] → file.png
+        img_name = raw.split("|")[0].strip()
+
+        # md 파일과 같은 폴더 또는 하위 폴더에서 파일 찾기
+        repo_root = Path(__file__).parent  # tistory-bot 루트 (= 레포 최상위)
+        candidates = [
+            md_dir / img_name,                        # posts/파일명
+            md_dir / "images" / img_name,             # posts/images/파일명
+            md_dir / "assets" / img_name,             # posts/assets/파일명
+            repo_root / "00_첨부파일" / img_name,     # 옵시디언 기본 첨부 폴더
+            repo_root / img_name,                     # 레포 루트
+        ]
+        found_path = None
+        for c in candidates:
+            if c.exists():
+                found_path = str(c.resolve())
+                break
+
+        if found_path:
+            idx = len(image_list)
+            placeholder = f"IMAGE_PLACEHOLDER_{idx}"
+            image_list.append((placeholder, found_path, img_name))
+            return placeholder
+        else:
+            print(f"  ⚠️  이미지 파일 없음: {img_name}")
+            return ""  # 없으면 제거
+
+    body = re.sub(r"!\[\[(.+?)\]\]", replace_obsidian_image, content)
+
+    # 일반 마크다운 이미지 ![alt](path) 도 처리
+    def replace_md_image(m):
+        alt, src = m.group(1), m.group(2)
+        if src.startswith("http"):
+            # 외부 URL은 그대로 <img> 태그
+            return f'<img src="{src}" alt="{alt}">'
+        img_path = md_dir / src
+        if img_path.exists():
+            idx = len(image_list)
+            placeholder = f"IMAGE_PLACEHOLDER_{idx}"
+            image_list.append((placeholder, str(img_path.resolve()), alt))
+            return placeholder
+        return ""
+
+    body = re.sub(r"!\[([^\]]*)\]\(([^)]+)\)", replace_md_image, body)
 
     # 간단한 마크다운 → HTML
     body = md_to_html(body)
 
-    return title, body
+    return title, body, image_list
+
+
+def inline_format(text: str) -> str:
+    """볼드, 이탤릭, 링크 등 인라인 요소 변환 (모든 라인 유형에 공통 적용)"""
+    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+    text = re.sub(r"\*(.+?)\*",     r"<em>\1</em>",         text)
+    text = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\2">\1</a>', text)
+    text = re.sub(r"(?<![\"'(])(https?://[^\s<]+)", r'<a href="\1">\1</a>', text)
+    return text
 
 
 def md_to_html(md: str) -> str:
@@ -75,35 +132,39 @@ def md_to_html(md: str) -> str:
     in_list = False
 
     for line in lines:
-        if line.startswith("### "):
+        stripped = line.strip()
+
+        # 이미지 placeholder 단독 라인 → 그대로 유지 (나중에 <img>로 교체됨)
+        if re.match(r"^IMAGE_PLACEHOLDER_\d+$", stripped):
             if in_list: html.append("</ul>"); in_list = False
-            html.append(f"<h3>{line[4:].strip()}</h3>")
+            html.append(stripped)
+
+        elif line.startswith("### "):
+            if in_list: html.append("</ul>"); in_list = False
+            html.append(f"<h3>{inline_format(line[4:].strip())}</h3>")
         elif line.startswith("## "):
             if in_list: html.append("</ul>"); in_list = False
-            html.append(f"<h2>{line[3:].strip()}</h2>")
+            html.append(f"<h2>{inline_format(line[3:].strip())}</h2>")
         elif line.startswith("# "):
             if in_list: html.append("</ul>"); in_list = False
-            html.append(f"<h1>{line[2:].strip()}</h1>")
-        elif line.strip() in ("---", "***"):
+            html.append(f"<h1>{inline_format(line[2:].strip())}</h1>")
+        elif stripped in ("---", "***"):
             if in_list: html.append("</ul>"); in_list = False
             html.append("<hr>")
         elif line.startswith("> "):
             if in_list: html.append("</ul>"); in_list = False
-            html.append(f"<blockquote><p>{line[2:].strip()}</p></blockquote>")
+            html.append(f"<blockquote><p>{inline_format(line[2:].strip())}</p></blockquote>")
         elif re.match(r"^[-*]\s", line):
             if not in_list: html.append("<ul>"); in_list = True
-            html.append(f"<li>{line[2:].strip()}</li>")
-        elif line.strip() == "":
+            html.append(f"<li>{inline_format(line[2:].strip())}</li>")
+        elif stripped == "":
             if in_list: html.append("</ul>"); in_list = False
             html.append("")
         else:
             if in_list: html.append("</ul>"); in_list = False
-            line = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", line)
-            line = re.sub(r"\*(.+?)\*",     r"<em>\1</em>",         line)
-            line = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\2">\1</a>', line)
-            line = re.sub(r"(?<![\"'(])(https?://[^\s<]+)", r'<a href="\1">\1</a>', line)
-            if line.strip():
-                html.append(f"<p>{line.strip()}</p>")
+            formatted = inline_format(stripped)
+            if formatted:
+                html.append(f"<p>{formatted}</p>")
 
     if in_list:
         html.append("</ul>")
@@ -111,7 +172,63 @@ def md_to_html(md: str) -> str:
     return "\n".join(html)
 
 
-async def post_to_tistory(title: str, content: str, draft: bool = False):
+async def upload_image_to_tistory(page, image_path: str) -> str:
+    """티스토리 에디터에 이미지를 업로드하고 업로드된 URL을 반환"""
+    print(f"  🖼️  이미지 업로드 중: {Path(image_path).name}")
+
+    # 이미지 업로드 버튼 클릭 (카메라/이미지 아이콘)
+    # 티스토리 에디터 툴바의 이미지 삽입 버튼
+    upload_btn = await page.query_selector("button[data-name='image'], .btn-upload-image, button.mce-ico.mce-i-image")
+    if not upload_btn:
+        # TinyMCE 툴바에서 이미지 버튼 찾기
+        upload_btn = await page.query_selector("button[aria-label*='이미지'], button[title*='이미지'], button[title*='Image']")
+
+    if not upload_btn:
+        # JavaScript로 TinyMCE 이미지 플러그인 직접 호출 시도
+        print("  ⚠️  이미지 버튼을 찾지 못해 파일 input을 직접 사용합니다.")
+
+    # 파일 input 요소 찾기 (숨겨진 경우 포함)
+    file_input = await page.query_selector("input[type='file'][accept*='image'], input[type='file'].upload-file")
+
+    if not file_input:
+        # 이미지 업로드 버튼 클릭해서 파일 input 활성화
+        if upload_btn:
+            await upload_btn.click()
+            await page.wait_for_timeout(1000)
+            file_input = await page.query_selector("input[type='file']")
+
+    if not file_input:
+        print(f"  ❌ 파일 업로드 input을 찾지 못했습니다.")
+        return None
+
+    # 이미지 파일 설정
+    await file_input.set_input_files(image_path)
+    await page.wait_for_timeout(3000)  # 업로드 완료 대기
+
+    # 업로드 후 삽입된 img 태그의 src 가져오기
+    uploaded_url = await page.evaluate("""
+        () => {
+            // 최근 삽입된 img 태그 찾기
+            const ed = typeof tinymce !== 'undefined' ? (tinymce.activeEditor || tinymce.editors[0]) : null;
+            if (ed) {
+                const imgs = ed.getBody().querySelectorAll('img');
+                if (imgs.length > 0) {
+                    return imgs[imgs.length - 1].src;
+                }
+            }
+            return null;
+        }
+    """)
+
+    if uploaded_url:
+        print(f"  ✅ 업로드 완료: {uploaded_url[:60]}...")
+        return uploaded_url
+    else:
+        print(f"  ⚠️  업로드 URL을 가져오지 못했습니다.")
+        return None
+
+
+async def post_to_tistory(title: str, content: str, image_list: list = None, draft: bool = False):
     blog = CONFIG["blog_name"]
     write_url = f"https://{blog}.tistory.com/manage/newpost/"
 
@@ -147,6 +264,34 @@ async def post_to_tistory(title: str, content: str, draft: bool = False):
 
         # TinyMCE 에디터 로딩 대기
         await page.wait_for_timeout(3000)
+
+        # ── 이미지 업로드 처리 ───────────────────────────────────────
+        if image_list:
+            print(f"\n🖼️  이미지 {len(image_list)}개 업로드 시작...")
+            uploaded_urls = {}  # placeholder → 업로드된 URL
+
+            for placeholder, img_path, img_name in image_list:
+                url = await upload_image_to_tistory(page, img_path)
+                if url:
+                    uploaded_urls[placeholder] = url
+                else:
+                    # 업로드 실패시 alt 텍스트로 대체
+                    uploaded_urls[placeholder] = None
+                    print(f"  ⚠️  {img_name} 업로드 실패 → 이미지 제거")
+
+            # placeholder를 실제 <img> 태그로 교체
+            for placeholder, url in uploaded_urls.items():
+                if url:
+                    # img_name 찾기
+                    img_name = next((n for p, _, n in image_list if p == placeholder), "image")
+                    img_tag = f'<img src="{url}" alt="{img_name}" style="max-width:100%;">'
+                    content = content.replace(placeholder, img_tag)
+                else:
+                    content = content.replace(placeholder, "")
+
+            print(f"✅ 이미지 처리 완료 ({len([u for u in uploaded_urls.values() if u])}개 성공)")
+        # ────────────────────────────────────────────────────────────
+
         escaped = content.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
 
         # TinyMCE setContent + textarea 동기화 한번에 처리
@@ -276,8 +421,15 @@ def main():
         print(f"📂 최신 파일 자동 선택: {md_path.name}")
 
     print(f"📄 파일: {md_path.name}")
-    title, body = parse_markdown(str(md_path))
+    title, body, image_list = parse_markdown(str(md_path))
     print(f"📝 제목: {title}")
+    if image_list:
+        print(f"🖼️  이미지 {len(image_list)}개 감지:")
+        for placeholder, img_path, img_name in image_list:
+            exists = "✅" if Path(img_path).exists() else "❌ 파일없음"
+            print(f"   {exists} {img_name}")
+    else:
+        print(f"🖼️  이미지 없음")
     mode = "임시저장" if args.draft else "발행"
     print(f"🚀 모드: {mode}")
 
@@ -286,7 +438,7 @@ def main():
         print("취소됨")
         return
 
-    asyncio.run(post_to_tistory(title, body, draft=args.draft))
+    asyncio.run(post_to_tistory(title, body, image_list=image_list, draft=args.draft))
 
 
 if __name__ == "__main__":
