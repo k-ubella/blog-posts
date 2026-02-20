@@ -78,7 +78,8 @@ def github_raw_url(img_name: str) -> Optional[str]:
 
 
 def inline_format(text: str) -> str:
-    """볼드, 이탤릭, 링크 인라인 변환"""
+    """볼드, 이탤릭, 인라인코드, 링크 인라인 변환"""
+    text = re.sub(r"`([^`]+)`", lambda m: f'<code style="background:#f0f0f0;padding:2px 5px;border-radius:3px;font-family:monospace;">{m.group(1).replace("&","&amp;").replace("<","&lt;").replace(">","&gt;")}</code>', text)
     text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
     text = re.sub(r"\*(.+?)\*",     r"<em>\1</em>",         text)
     text = re.sub(r"\[(.+?)\]\((.+?)\)", r'<a href="\2">\1</a>', text)
