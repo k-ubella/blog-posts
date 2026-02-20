@@ -275,6 +275,25 @@ async def post_to_tistory(title: str, content: str, image_list: list = None, dra
         # TinyMCE 에디터 로딩 대기
         await page.wait_for_timeout(3000)
 
+        # ── 페이지의 모든 file input 디버그 출력 ────────────────────
+        file_inputs_info = await page.evaluate("""
+            () => {
+                const inputs = document.querySelectorAll('input[type="file"]');
+                return Array.from(inputs).map(el => ({
+                    id: el.id,
+                    name: el.name,
+                    className: el.className,
+                    accept: el.accept,
+                    outerHTML: el.outerHTML.substring(0, 200)
+                }));
+            }
+        """)
+        print(f"\n🔍 페이지 내 file input 목록 ({len(file_inputs_info)}개):")
+        for fi in file_inputs_info:
+            print(f"  id={fi['id']} name={fi['name']} class={fi['className']} accept={fi['accept']}")
+            print(f"  HTML: {fi['outerHTML']}")
+        # ────────────────────────────────────────────────────────────
+
         # ── 이미지 업로드 처리 (치환자 방식) ────────────────────────
         if image_list:
             print(f"\n🖼️  이미지 {len(image_list)}개 업로드 시작...")
