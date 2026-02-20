@@ -90,39 +90,100 @@ def md_to_html(md: str) -> str:
     lines = md.split("\n")
     html = []
     in_list = False
+    in_code = False
+    code_lines = []
+    in_table = False
+    table_rows = []
+
+    def flush_list():
+        nonlocal in_list
+        if in_list:
+            html.append("</ul>")
+            in_list = False
+
+    def flush_table():
+        nonlocal in_table, table_rows
+        if not table_rows:
+            return
+        thtml = ['<table border="1" style="border-collapse:collapse;width:100%;margin:1em 0;">']
+        for i, row in enumerate(table_rows):
+            cells = [c.strip() for c in row.strip().strip("|").split("|")]
+            tag = "th" if i == 0 else "td"
+            style = ' style="padding:6px 12px;text-align:left;"'
+            thtml.append("<tr>" + "".join(f"<{tag}{style}>{inline_format(c)}</{tag}>" for c in cells) + "</tr>")
+        thtml.append("</table>")
+        html.append("\n".join(thtml))
+        table_rows = []
+        in_table = False
 
     for line in lines:
         stripped = line.strip()
 
+        # 코드 블록 처리
+        if stripped.startswith("```"):
+            if not in_code:
+                flush_list()
+                flush_table()
+                lang = stripped[3:].strip()
+                in_code = True
+                code_lines = []
+            else:
+                code_str = "\n".join(code_lines)
+                html.append(f'<pre style="background:#1e2d3d;color:#7dd3fc;padding:1em;border-radius:6px;overflow-x:auto;"><code>{code_str}</code></pre>')
+                in_code = False
+                code_lines = []
+            continue
+
+        if in_code:
+            # HTML 특수문자 이스케이프
+            safe = line.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            code_lines.append(safe)
+            continue
+
+        # 테이블 처리 (| 로 시작하는 줄)
+        if stripped.startswith("|"):
+            flush_list()
+            # 구분선 행 skip (|---|---|)
+            if re.match(r"^[\|\s\-:]+$", stripped):
+                continue
+            in_table = True
+            table_rows.append(stripped)
+            continue
+        else:
+            if in_table:
+                flush_table()
+
         if line.startswith("### "):
-            if in_list: html.append("</ul>"); in_list = False
+            flush_list()
             html.append(f"<h3>{inline_format(line[4:].strip())}</h3>")
         elif line.startswith("## "):
-            if in_list: html.append("</ul>"); in_list = False
+            flush_list()
             html.append(f"<h2>{inline_format(line[3:].strip())}</h2>")
         elif line.startswith("# "):
-            if in_list: html.append("</ul>"); in_list = False
+            flush_list()
             html.append(f"<h1>{inline_format(line[2:].strip())}</h1>")
         elif stripped in ("---", "***"):
-            if in_list: html.append("</ul>"); in_list = False
+            flush_list()
             html.append("<hr>")
         elif line.startswith("> "):
-            if in_list: html.append("</ul>"); in_list = False
-            html.append(f"<blockquote><p>{inline_format(line[2:].strip())}</p></blockquote>")
+            flush_list()
+            html.append(f'<blockquote style="border-left:4px solid #ccc;margin:0;padding:0.5em 1em;color:#555;"><p>{inline_format(line[2:].strip())}</p></blockquote>')
         elif re.match(r"^[-*]\s", line):
-            if not in_list: html.append("<ul>"); in_list = True
+            if not in_list:
+                html.append("<ul>")
+                in_list = True
             html.append(f"<li>{inline_format(line[2:].strip())}</li>")
         elif stripped == "":
-            if in_list: html.append("</ul>"); in_list = False
+            flush_list()
             html.append("")
         else:
-            if in_list: html.append("</ul>"); in_list = False
+            flush_list()
             formatted = inline_format(stripped)
             if formatted:
                 html.append(f"<p>{formatted}</p>")
 
-    if in_list:
-        html.append("</ul>")
+    flush_list()
+    flush_table()
 
     return "\n".join(html)
 
