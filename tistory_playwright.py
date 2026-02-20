@@ -26,6 +26,7 @@ import io
 import urllib.parse
 import subprocess
 from pathlib import Path
+from typing import Optional
 
 # 터미널 인코딩 강제 UTF-8
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
@@ -53,7 +54,7 @@ CONFIG = {
 SESSION_FILE = Path(__file__).parent / "tistory_session.json"
 
 
-def github_raw_url(img_name: str) -> str | None:
+def github_raw_url(img_name: str) -> Optional[str]:
     """이미지 파일명 → GitHub raw URL 변환 (레포 내 경로 자동 탐색)"""
     repo_root = Path(__file__).parent
     user   = CONFIG["github_user"]
