@@ -275,23 +275,54 @@ async def post_to_tistory(title: str, content: str, image_list: list = None, dra
         # TinyMCE 에디터 로딩 대기
         await page.wait_for_timeout(3000)
 
-        # ── 페이지의 모든 file input 디버그 출력 ────────────────────
-        file_inputs_info = await page.evaluate("""
+        # ── TinyMCE iframe 내부 포함 전체 구조 디버그 ───────────────
+        debug_info = await page.evaluate("""
             () => {
-                const inputs = document.querySelectorAll('input[type="file"]');
-                return Array.from(inputs).map(el => ({
+                const result = {};
+
+                // 1. TinyMCE iframe 확인
+                const iframe = document.querySelector('iframe#editor-tistory_ifr, iframe[id*="mce"], iframe[id*="tistory"]');
+                result.iframeId = iframe ? iframe.id : 'none';
+
+                // 2. TinyMCE 툴바 버튼 목록
+                const btns = document.querySelectorAll('.mce-toolbar button, .tox-toolbar button, [class*="toolbar"] button');
+                result.toolbarButtons = Array.from(btns).slice(0, 20).map(b => ({
+                    title: b.title || b.getAttribute('aria-label') || '',
+                    className: b.className.substring(0, 80)
+                }));
+
+                // 3. 이미지 관련 요소 (숨김 포함)
+                const allInputs = document.querySelectorAll('input');
+                result.allInputs = Array.from(allInputs).map(el => ({
+                    type: el.type,
                     id: el.id,
                     name: el.name,
-                    className: el.className,
-                    accept: el.accept,
-                    outerHTML: el.outerHTML.substring(0, 200)
+                    className: el.className.substring(0, 60),
+                    accept: el.accept
                 }));
+
+                // 4. 이미지 업로드 관련 버튼/링크
+                const imgBtns = document.querySelectorAll('[class*="image"], [id*="image"], [class*="photo"], [class*="upload"]');
+                result.imageElements = Array.from(imgBtns).slice(0, 10).map(el => ({
+                    tag: el.tagName,
+                    id: el.id,
+                    className: el.className.substring(0, 80),
+                    text: el.innerText ? el.innerText.substring(0, 30) : ''
+                }));
+
+                return result;
             }
         """)
-        print(f"\n🔍 페이지 내 file input 목록 ({len(file_inputs_info)}개):")
-        for fi in file_inputs_info:
-            print(f"  id={fi['id']} name={fi['name']} class={fi['className']} accept={fi['accept']}")
-            print(f"  HTML: {fi['outerHTML']}")
+        print(f"\n🔍 TinyMCE iframe id: {debug_info['iframeId']}")
+        print(f"\n🔍 툴바 버튼 목록:")
+        for btn in debug_info['toolbarButtons']:
+            print(f"  title={btn['title']} class={btn['className']}")
+        print(f"\n🔍 모든 input 목록 ({len(debug_info['allInputs'])}개):")
+        for inp in debug_info['allInputs']:
+            print(f"  type={inp['type']} id={inp['id']} name={inp['name']} accept={inp['accept']}")
+        print(f"\n🔍 이미지/업로드 관련 요소:")
+        for el in debug_info['imageElements']:
+            print(f"  {el['tag']} id={el['id']} class={el['className']} text={el['text']}")
         # ────────────────────────────────────────────────────────────
 
         # ── 이미지 업로드 처리 (치환자 방식) ────────────────────────
